@@ -19,9 +19,13 @@ class EncoderOnlyRerankerRunner(AbsRerankerRunner):
     def load_tokenizer_and_model(self) -> Tuple[PreTrainedTokenizer, AbsRerankerModel]:
         """Load the tokenizer and model.
 
+        Args:
+            self: 实例对象
+            
         Returns:
-            Tuple[PreTrainedTokenizer, AbsEmbedderModel]: Tokenizer and model instances.
+            Tuple[PreTrainedTokenizer, AbsRerankerModel]: Tokenizer and model instances.
         """
+        # 加载预训练分词器
         tokenizer = AutoTokenizer.from_pretrained(
             self.model_args.model_name_or_path,
             cache_dir=self.model_args.cache_dir,
@@ -29,7 +33,9 @@ class EncoderOnlyRerankerRunner(AbsRerankerRunner):
             trust_remote_code=self.model_args.trust_remote_code
         )
 
+        # 设置分类标签数量为1（用于二分类或回归任务）
         num_labels = 1
+        # 加载模型配置
         config = AutoConfig.from_pretrained(
             self.model_args.config_name if self.model_args.config_name else self.model_args.model_name_or_path,
             num_labels=num_labels,
@@ -39,6 +45,7 @@ class EncoderOnlyRerankerRunner(AbsRerankerRunner):
         )
         logger.info('Config: %s', config)
 
+        # 加载序列分类基础模型
         base_model = AutoModelForSequenceClassification.from_pretrained(
             self.model_args.model_name_or_path,
             config=config,
@@ -48,12 +55,14 @@ class EncoderOnlyRerankerRunner(AbsRerankerRunner):
             trust_remote_code=self.model_args.trust_remote_code
         )
 
+        # 构建交叉编码器模型
         model = CrossEncoderModel(
             base_model,
             tokenizer=tokenizer,
             train_batch_size=self.training_args.per_device_train_batch_size,
         )
 
+        # 如果启用梯度检查点，则启用输入梯度计算
         if self.training_args.gradient_checkpointing:
             model.enable_input_require_grads()
 
@@ -62,9 +71,13 @@ class EncoderOnlyRerankerRunner(AbsRerankerRunner):
     def load_trainer(self) -> EncoderOnlyRerankerTrainer:
         """Load the trainer.
 
+        Args:
+            self: 实例对象
+            
         Returns:
             EncoderOnlyRerankerTrainer: Loaded trainer instance.
         """
+        # 创建并返回重排序训练器实例
         trainer = EncoderOnlyRerankerTrainer(
             model=self.model,
             args=self.training_args,

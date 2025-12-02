@@ -19,7 +19,7 @@ def load_model(lm_type):
         model_name_or_path = os.path.abspath("TODOpath/Mistral-7B-Instruct-v0.3") 
 
     elif lm_type == "Llama-3.1-8B-Instruct":
-        model_name_or_path = os.path.abspath("TODOpath/Meta-Llama-3.1-8B-Instruct")
+        model_name_or_path = os.path.abspath("/root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/FlashRAG/models/Meta-Llama-3-8B-Instruct")
     elif lm_type == "Llama-3.1-70B-Instruct":
         model_name_or_path = os.path.abspath("TODOpath/Meta-Llama-3.1-70B-Instruct") 
 

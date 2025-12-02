@@ -104,29 +104,7 @@ Selector Training:
 The initial weight of the model is bge-rerank-base，
 ```bash
 cd ./gainRAG
-torchrun --nproc_per_node 1 \
-	-m selector_finetune \
-	--model_name_or_path  path/bge-rerank-base \
-    --train_data TODOpath/data.jsonl \
-	--deepspeed TODOpath/deepspeed/ds_stage0.json \
-	--output_dir TODOpath/model_outputs/\
-	--overwrite_output_dir \
-    --train_group_size 16 \
-	--knowledge_distillation True \
-    --query_max_len 512 \
-    --passage_max_len 512 \
-    --pad_to_multiple_of 8 \
-    --learning_rate 6e-5 \
-    --fp16 \
-    --num_train_epochs 2 \
-    --per_device_train_batch_size 8 \
-    --gradient_accumulation_steps 1 \
-    --dataloader_drop_last True \
-    --warmup_ratio 0.1 \
-    --gradient_checkpointing \
-    --weight_decay 0.01 \
-    --logging_steps 1 \
-    --save_steps 1000
+torchrun --nproc_per_node 1 -m selector_finetune --model_name_or_path  /root/.cache/huggingface/hub/models--BAAI--bge-reranker-base/snapshots/2cfc18c9415c912f9d8155881c133215df768a70     --train_data /root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/GainRAG/GainRAG/data/without_pse_nq_train_selector_sampled_13971.jsonl  --output_dir ./model_outputs/test_grpo/--overwrite_output_dir     --train_group_size 16 --knowledge_distillation True     --query_max_len 256     --passage_max_len 256 --max_len 512    --pad_to_multiple_of 8     --learning_rate 6e-5     --fp16     --num_train_epochs 2     --per_device_train_batch_size 8     --gradient_accumulation_steps 1     --dataloader_drop_last True     --warmup_ratio 0.1     --gradient_checkpointing     --weight_decay 0.01     --logging_steps 1     --save_steps 3000
 ```
 </details>
 

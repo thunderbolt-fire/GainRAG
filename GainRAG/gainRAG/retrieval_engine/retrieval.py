@@ -55,7 +55,7 @@ def _normalize(text):
 
 def check_answer(example, tokenizer) -> List[bool]:
     """Search through all the top docs to see if they have any of the answers."""
-    answers = example['answers']
+    answers = example['golden_answers']
     ctxs = example['ctxs']
 
     hits = []
@@ -166,11 +166,42 @@ def validate(data, workers_num):
 
 def add_passages(data, passages, top_passages_and_scores):
     # add passages to original data
-    merged_data = []
     assert len(data) == len(top_passages_and_scores)
     for i, d in enumerate(data):
         results_and_scores = top_passages_and_scores[i]
-        docs = [passages[doc_id] for doc_id in results_and_scores[0]]
+        docs = []
+        
+        for doc_id in results_and_scores[0]:
+            passage = passages[doc_id]
+            
+            # 处理不同的文档格式
+            if 'contents' in passage:
+                # 如果是contents格式，需要分离title和text
+                contents = passage['contents']
+                lines = contents.split('\n', 1)  # 只分割第一个换行符
+                
+                if len(lines) >= 2:
+                    title = lines[0].strip()
+                    text = lines[1].strip()
+                else:
+                    title = lines[0].strip() if lines else ""
+                    text = ""
+                
+                doc = {
+                    "id": passage["id"],
+                    "title": title,
+                    "text": text
+                }
+            else:
+                # 如果已经有title和text字段
+                doc = {
+                    "id": passage.get("id", doc_id),
+                    "title": passage.get("title", ""),
+                    "text": passage.get("text", "")
+                }
+            
+            docs.append(doc)
+        
         scores = [str(score) for score in results_and_scores[1]]
         ctxs_num = len(docs)
         d["ctxs"] = [
@@ -237,47 +268,73 @@ def embed_queries(queries, model, tokenizer,  batch_size=64):
     return embeddings.cpu().numpy()
    
 def main(args):
+    """
+    主函数，用于加载模型、索引数据、处理查询并保存结果。
+    
+    参数:
+    args - 包含各种配置和路径的参数对象
+    """
 
+    # 加载模型和tokenizer
     print(f"Loading model from: {args.model_name_or_path}")
     model = Contriever.from_pretrained(args.model_name_or_path)
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
+    # 将模型设置为评估模式并移到GPU
     model.eval()
     model = model.cuda()
    
+    # 初始化索引器
     index = Indexer(args.projection_size, args.n_subquantizers, args.n_bits, args.use_gpu)
-    input_paths = glob.glob(args.passages_embeddings)
-    input_paths = sorted(input_paths)
-    embeddings_dir = os.path.dirname(input_paths[0])
-    index_path = os.path.join(embeddings_dir, "index.faiss")
     
-    if args.save_or_load_index and os.path.exists(index_path):
-        index.deserialize_from(embeddings_dir)
+    # 如果指定了直接的索引路径，优先使用该路径
+    if args.index_path is not None and os.path.exists(args.index_path):
+        print(f"Loading index from specified path: {args.index_path}")
+        index_dir = os.path.dirname(args.index_path)
+        index_file = os.path.basename(args.index_path)
+        # 直接从指定路径加载索引
+        index.deserialize_from(index_dir, index_filename=index_file)
     else:
-        # index all passages
-        print(f"Indexing passages from files {input_paths}")
-        start_time_indexing = time.time()
-        index_encoded_data(index, input_paths, args.indexing_batch_size)
-        print(f"Indexing time: {time.time()-start_time_indexing:.1f} s.")
-        if args.save_or_load_index:
-            index.serialize(embeddings_dir)
-
-    # load passages
+        # 获取所有要索引的文件路径
+        input_paths = glob.glob(args.passages_embeddings)
+        input_paths = sorted(input_paths)
+        embeddings_dir = os.path.dirname(input_paths[0])
+        
+        index_path = os.path.join(embeddings_dir, "index.faiss")
+        
+        # 如果存在索引且设置为保存或加载索引，则加载索引
+        if args.save_or_load_index and os.path.exists(index_path):
+            index.deserialize_from(embeddings_dir)
+        else:
+            # 否则，索引所有文档
+            print(f"Indexing passages from files {input_paths}")
+            start_time_indexing = time.time()
+            index_encoded_data(index, input_paths, args.indexing_batch_size)
+            print(f"Indexing time: {time.time()-start_time_indexing:.1f} s.")
+            # 如果设置为保存或加载索引，则保存索引
+            if args.save_or_load_index:
+                index.serialize(embeddings_dir)
+    
+    # 加载文档并创建ID映射
     passages = load_passages(args.passages)
     passage_id_map = {x["id"]: x for x in passages}
 
+    # 处理所有数据路径
     data_paths = glob.glob(args.data_path_or_dir)
     for path in data_paths:
         data = load_data(path)
         output_path = os.path.join(args.output_dir, os.path.basename(path))
+        # 提取查询并计算嵌入
         queries = [ex["question"] for ex in data]
         questions_embedding = embed_queries(queries, model, tokenizer)
-        # get top k results
+        # 获取最相关的文档
         start_time_retrieval = time.time()
         top_ids_and_scores = index.search_knn(questions_embedding, args.n_docs)
         print(f"Search time: {time.time()-start_time_retrieval:.1f} s.")
+        # 更新数据以包含相关文档并验证
         add_passages(data, passage_id_map, top_ids_and_scores)
         hasanswer = validate(data, args.validation_workers)
         add_hasanswer(data, hasanswer)
+        # 保存结果
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with jsonlines.open(output_path, mode='w') as writer:
             for item in data:
@@ -292,16 +349,18 @@ if __name__ == '__main__':
     parser.add_argument("--projection_size", type=int, default=768, help="Projection size of the embeddings.")
     parser.add_argument("--n_subquantizers", type=int, default=0, help="Number of subquantizers.")
     parser.add_argument("--n_bits", type=int, default=8, help="Number of bits for quantization.")
-    parser.add_argument("--indexing_batch_size", type=int, default=1000000, help="Batch size for indexing.")
+    parser.add_argument("--indexing_batch_size", type=int, default=10000, help="Batch size for indexing.")
     parser.add_argument("--validation_workers", type=int, default=8, help="Number of workers for validation.")
     parser.add_argument("--save_or_load_index",  type=lambda x: x.lower() == 'true', default=True, help="Save or load index (default: True).")
-    parser.add_argument("--passages_embeddings", type=str, default=None, help="Path to passages embeddings.")
-    parser.add_argument("--passages", type=str, default=None, help="Path to passages file.")
-    parser.add_argument("--model_name_or_path", type=str, default=None, help="Path to the model.")
-    parser.add_argument("--data_path_or_dir", type=str, default=None, help="Path or dir to the input data.")
-    parser.add_argument("--output_dir", type=str, default=None, help="Path to the output directory.")
+    parser.add_argument("--passages_embeddings", type=str, default='/root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/GainRAG/wikipedia_embeddings/passages_*', help="Path to passages embeddings.")
+    parser.add_argument("--passages", type=str, default='/root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/FlashRAG/FlashRAG_Dataset/retrieval_corpus/wiki18_100w.jsonl', help="Path to passages file.")
+    parser.add_argument("--model_name_or_path", type=str, default='/root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/FlashRAG/models/e5-base-v2', help="Path to the model.")
+    parser.add_argument("--data_path_or_dir", type=str, default='/root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/GainRAG/dataset/nq/train.jsonl', help="Path or dir to the input data.")
+    parser.add_argument("--output_dir", type=str, default='retrieved_results', help="Path to the output directory.")
     parser.add_argument("--n_docs", type=int, default=100, help="Number of documents to retrieve.")
     parser.add_argument("--use_gpu", type=lambda x: x.lower() == 'true', default=True, help="Enable GPU for computation (default: True).")
+    parser.add_argument("--index_path", type=str, default='/root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/FlashRAG/FlashRAG_Dataset/retrieval_corpus/data00/jiajie_jin/flashrag_indexes/wiki_dpr_100w/e5_flat_inner.index', 
+                    help="Direct path to a specific index file (overrides default index location)")
 
     # Parsing arguments
     args = parser.parse_args()

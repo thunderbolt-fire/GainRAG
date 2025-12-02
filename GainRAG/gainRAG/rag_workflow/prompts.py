@@ -61,7 +61,7 @@ def preprocess_ARC_Challenge(data):
             choice_text += "\n{0}: {1}".format(answer_key, text)
 
         item["question"] = item["question"] + choice_text
-        item["answers"] = [item["answerKey"]]
+        item["golden_answers"] = [item["answerKey"]]
         new_data.append(item)
     return new_data
 
@@ -70,7 +70,7 @@ def preprocess_PubHealth(data):
     for item in data:
         answer = 'true' if item['label']=='SUPPORTS' else 'false'
         item["question"] = item["claim"]
-        item["answers"] = [answer]
+        item["golden_answers"] = [answer]
         new_data.append(item)
     return new_data
 
@@ -112,7 +112,7 @@ def build_input_with_retrieval_K_th(data, k_indices=[0,1,2,3,4,5], task='ARC_Cha
     for item in data:
         new_item = dict()
         new_item['question'] = item['question']
-        new_item['answers'] = item['answers']
+        new_item['golden_answers'] = item['golden_answers']
         new_item['prompt_standard'] = INSTRUCTION_PROMPT['Instruction_Without_Retrieval'].format_map({'instruction':TASK_INST[task], 'input': item['question']})
 
         new_item['passages'] = list()

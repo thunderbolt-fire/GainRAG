@@ -1,0 +1,17 @@
+CUDA_VISIBLE_DEVICES=0 torchrun --nproc_per_node=1 \
+-m FlagEmbedding.finetune.reranker.encoder_only.base \
+--output_dir ./contrast/new \
+--model_name_or_path BAAI/bge-reranker-base \
+--train_data /root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/GainRAG/GainRAG/data/20250910_converted_data_train_nq_filter_contrasts_lambda_0.5_gamma_5.0.jsonl \
+--learning_rate 6e-5 \
+--fp16 \
+--num_train_epochs 2 \
+--per_device_train_batch_size 16 \
+--gradient_accumulation_steps 4 \
+--dataloader_drop_last True \
+--train_group_size 7 \
+--max_len 512 \
+--weight_decay 0.01 \
+--logging_steps 100 \
+--save_strategy no \
+--save_steps 1000

@@ -34,8 +34,8 @@ def generate_passages(lm_type, prompts_data, task):
         retrieved_responses = llm_response_vllm(model, retrieved_tokens)
 
         for prompt_item, retrieved_response in zip(prompts_data[i]['passages'], retrieved_responses):
-            with_retrieval_em = em_max_over_ground_truths(retrieved_response, prompts_data[i]['answers'], regex=True)
-            with_retrieval_f1 = f1_max_over_ground_truths(retrieved_response, prompts_data[i]['answers'])
+            with_retrieval_em = em_max_over_ground_truths(retrieved_response, prompts_data[i]['golden_answers'], regex=True)
+            with_retrieval_f1 = f1_max_over_ground_truths(retrieved_response, prompts_data[i]['golden_answers'])
             prompt_item['EM_with_retrieval'] = with_retrieval_em
             prompt_item['F1_with_retrieval'] = with_retrieval_f1
             # print(f"{i+1} : EM:{with_retrieval_em} F1:{with_retrieval_f1}")
@@ -64,7 +64,7 @@ def signal_construction(data_path, output_file, lm_type, task, alpha=0.5):
         standard_query = llm_prompts(lm_type, standard_prompt, tokenizer, tokenize=False)[0]
         retrieved_queries = llm_prompts(lm_type, retrieved_prompts, tokenizer, tokenize=False)
         
-        gold_answers = list(set(prompts_data[i]['answers'])) 
+        gold_answers = list(set(prompts_data[i]['golden_answers'])) 
         min_PPL_CD_list = [float('inf')]*len(prompts_data[i]['passages'])
         for gold_answer in gold_answers:
             PPL_CD_list = contrastive_tool.contrastive_PPL_multi_pro(model, tokenizer, standard_query, retrieved_queries, gold_answer, alpha=alpha)
@@ -103,11 +103,11 @@ set_seed(2024)
 import argparse
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--lm_type", type=str, default='Llama-3-8B-Instruct', help="LLM to use.")
-    parser.add_argument("--task", type=str, default='HotpotQA', help="Task prompt template to use.")
+    parser.add_argument("--lm_type", type=str, default='Llama-3.1-8B-Instruct', help="LLM to use.")
+    parser.add_argument("--task", type=str, default='NaturalQA', help="Task prompt template to use.")
     parser.add_argument("--alpha", type=float, default=0.5, help="alpha of contrastive decoding.")
-    parser.add_argument("--data_path", type=str, default=None, help="Path to the input file.")
-    parser.add_argument("--output_path", type=str, default=None, help="Path to the output file.")
+    parser.add_argument("--data_path", type=str, default='/root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/GainRAG/GainRAG/gainRAG/retrieval_engine/retrieved_results/train.jsonl', help="Path to the input file.")
+    parser.add_argument("--output_path", type=str, default='./data_train_nq.json', help="Path to the output file.")
     args = parser.parse_args()
     
     prompts_data = signal_construction(args.data_path, args.output_path, args.lm_type, args.task, args.alpha)
