@@ -1,4 +1,3 @@
-# python
 import torch
 from torch import nn, Tensor
 from transformers import AutoTokenizer
@@ -6,19 +5,10 @@ from transformers.file_utils import ModelOutput
 
 import torch.nn.functional as F
 
-# python
 import logging
-
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    filename="grpo.log",
-    filemode="w",  # 每次覆盖，想追加就用 "a"
-)
-
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, List, Union, Any
+from typing import Dict, Optional, List, Union
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +17,6 @@ logger = logging.getLogger(__name__)
 class RerankerOutput(ModelOutput):
     loss: Optional[Tensor] = None
     scores: Optional[Tensor] = None
-
-    # 下面是新增的一些调试 / 统计信息
-    raw_teacher_scores: Optional[Tensor] = None      # (B, K)
-    grpo_rewards: Optional[Tensor] = None            # (B, K)
-    grpo_advantage: Optional[Tensor] = None          # (B, K)
-    grpo_kl_loss: Optional[Tensor] = None            # 标量
-    grpo_entropy: Optional[Tensor] = None            # 标量
 
 
 class AbsRerankerModel(ABC, nn.Module):
@@ -49,11 +32,6 @@ class AbsRerankerModel(ABC, nn.Module):
         base_model: None,
         tokenizer: AutoTokenizer = None,
         train_batch_size: int = 4,
-        grpo_temperature: float = 1.0,   # teacher->reward 的温度
-        grpo_normalize: bool = True,     # 是否用组内标准差归一化 advantage
-        grpo_clip_adv: float = 5.0,      # 裁剪 advantage，0 或 None 关闭
-        grpo_kl_coef: float = 0.0,       # 可选 KL 正则系数，0 关闭
-        entropy_coef: float = 0.0,       # 可选熵奖励系数，>0 提升探索
     ):
         super().__init__()
         self.model = base_model
@@ -67,13 +45,6 @@ class AbsRerankerModel(ABC, nn.Module):
         self.train_batch_size = train_batch_size
 
         self.yes_loc = self.tokenizer('Yes', add_special_tokens=False)['input_ids'][-1]
-
-        # GRPO 超参
-        self.grpo_temperature = grpo_temperature
-        self.grpo_normalize = grpo_normalize
-        self.grpo_clip_adv = grpo_clip_adv
-        self.grpo_kl_coef = grpo_kl_coef
-        self.entropy_coef = entropy_coef
 
     def gradient_checkpointing_enable(self, **kwargs):
         """
@@ -96,82 +67,7 @@ class AbsRerankerModel(ABC, nn.Module):
         """
         pass
 
-    def _grpo_loss(
-        self,
-        student_log_probs: Tensor,  # (B, K), 即 log_softmax(logits)
-        teacher_scores: Tensor,     # (B, K)
-    ) -> (Tensor, Dict[str, Tensor]):
-        """
-        返回：
-          pg_loss: 标量 loss
-          stats:   各种中间统计信息
-        """
-        # 保存一份原始 teacher_scores（detach 避免反传）
-        raw_teacher_scores = teacher_scores.detach()
-
-        # 1) teacher_scores -> 组内奖励分布（softmax + 温度）
-        tau = max(self.grpo_temperature, 1e-6)
-        rewards = torch.softmax(teacher_scores / tau, dim=-1)  # (B, K), ∈ (0,1), sum=1
-
-        # 2) 组内相对优势（Group Relative Advantage）
-        adv = rewards - rewards.mean(dim=-1, keepdim=True)
-        if self.grpo_normalize:
-            std = rewards.std(dim=-1, keepdim=True).clamp_min(1e-8)
-            adv = adv / std
-
-        if self.grpo_clip_adv and self.grpo_clip_adv > 0:
-            adv = adv.clamp(min=-self.grpo_clip_adv, max=self.grpo_clip_adv)
-
-        # 3) REINFORCE 风格的目标：- E[adv * log pi(a)]
-        # 注意：adv 只作为权重，不反传
-        pg_loss = - (adv.detach() * student_log_probs).sum(dim=-1).mean()
-
-        # 4) 可选：KL 正则到 teacher 分布，稳定训练（默认 0 关闭）
-        kl_loss = torch.tensor(0.0, device=student_log_probs.device)
-        if self.grpo_kl_coef and self.grpo_kl_coef > 0:
-            teacher_targets = rewards.detach()  # teacher 的 soft 分布
-            kl_loss = F.kl_div(student_log_probs, teacher_targets, reduction="batchmean")
-            pg_loss = pg_loss + self.grpo_kl_coef * kl_loss
-
-        # 5) 可选：熵奖励，提升探索（默认 0 关闭）
-        entropy = torch.tensor(0.0, device=student_log_probs.device)
-        if self.entropy_coef and self.entropy_coef > 0:
-            probs = student_log_probs.exp()
-            entropy = -(probs * student_log_probs).sum(dim=-1).mean()
-            pg_loss = pg_loss - self.entropy_coef * entropy
-
-        stats = {
-            "raw_teacher_scores": raw_teacher_scores,  # (B, K)
-            "grpo_rewards": rewards.detach(),          # (B, K)
-            "grpo_advantage": adv.detach(),            # (B, K)
-            "grpo_kl_loss": kl_loss.detach(),          # 标量
-            "grpo_entropy": entropy.detach(),          # 标量
-        }
-
-        # 可选：也可以 log 一下平均值 + 前几项，便于对比分数变化
-        with torch.no_grad():
-            # 展平到 1 维后取前 8 个元素做示例
-            flat_teacher = raw_teacher_scores.view(-1)
-            flat_rewards = rewards.view(-1)
-
-            logger.debug(
-                "GRPO stats: "
-                f"teacher_scores_mean={raw_teacher_scores.mean().item():.4f}, "
-                f"rewards_mean={rewards.mean().item():.4f}, "
-                f"adv_mean={adv.mean().item():.4f}, "
-                f"kl_loss={kl_loss.item():.4f}, "
-                f"entropy={entropy.item():.4f}\n"
-                f"  teacher_scores_sample={flat_teacher[:8].tolist()}\n"
-                f"  grpo_rewards_sample={flat_rewards[:8].tolist()}"
-            )
-
-        return pg_loss, stats
-
-    def forward(
-        self,
-        pair: Union[Dict[str, Tensor], List[Dict[str, Tensor]]] = None,
-        teacher_scores: Optional[Tensor] = None,
-    ):
+    def forward(self, pair: Union[Dict[str, Tensor], List[Dict[str, Tensor]]] = None, teacher_scores: Optional[Tensor] = None):
         """The computation performed at every call.
 
         Args:
@@ -181,44 +77,36 @@ class AbsRerankerModel(ABC, nn.Module):
         Returns:
             RerankerOutput: Output of reranker model.
         """
-        ranker_logits = self.encode(pair)  # (B*K, 1 or dim) -> 将在下面 reshape
-
-        raw_teacher_scores = None
-        grpo_rewards = None
-        grpo_advantage = None
-        grpo_kl_loss = None
-        grpo_entropy = None
+        ranker_logits = self.encode(pair) # (batch_size * num, dim)  # dim=1, num=len(pairs 一个item组成的)
+        
 
         if self.training:
-            grouped_logits = ranker_logits.view(self.train_batch_size, -1)  # (B, K)
+            grouped_logits = ranker_logits.view(self.train_batch_size, -1)                              # (batch_size, pairs_num)
+            teacher_scores = torch.Tensor(teacher_scores)
+            teacher_targets = teacher_scores.view(self.train_batch_size, -1).to(grouped_logits.device)  # (batch_size, pairs_num)
 
-            # 准备 teacher_scores 与 student_inputs
-            teacher_scores = torch.as_tensor(
-                teacher_scores, device=grouped_logits.device
-            )
-            teacher_scores = teacher_scores.view(self.train_batch_size, -1)  # (B, K)
+            # GRPO loss implementation
+            # Calculate mean and std of rewards (teacher_scores) within each group
+            mean_rewards = teacher_targets.mean(dim=-1, keepdim=True)
+            std_rewards = teacher_targets.std(dim=-1, keepdim=True)
+            
+            # Calculate advantages
+            # Add a small epsilon to avoid division by zero
+            advantages = (teacher_targets - mean_rewards) / (std_rewards + 1e-8)
+            
+            # Calculate log probabilities of the student model
+            student_log_probs = torch.log_softmax(grouped_logits, dim=-1)
+            
+            # GRPO loss: maximize expected advantage -> minimize -1 * (log_prob * advantage)
+            # We detach advantages as they are considered fixed targets for the current step
+            loss = -torch.mean(torch.sum(student_log_probs * advantages.detach(), dim=-1))
 
-            student_log_probs = torch.log_softmax(grouped_logits, dim=-1)   # (B, K)
-
-            # 使用 GRPO 的组相对策略梯度损失，同时拿到统计信息
-            loss, stats = self._grpo_loss(student_log_probs, teacher_scores)
-
-            raw_teacher_scores = stats["raw_teacher_scores"]
-            grpo_rewards = stats["grpo_rewards"]
-            grpo_advantage = stats["grpo_advantage"]
-            grpo_kl_loss = stats["grpo_kl_loss"]
-            grpo_entropy = stats["grpo_entropy"]
         else:
             loss = None
 
         return RerankerOutput(
             loss=loss,
             scores=ranker_logits,
-            raw_teacher_scores=raw_teacher_scores,
-            grpo_rewards=grpo_rewards,
-            grpo_advantage=grpo_advantage,
-            grpo_kl_loss=grpo_kl_loss,
-            grpo_entropy=grpo_entropy,
         )
 
     def compute_loss(self, scores, target):
@@ -239,6 +127,7 @@ class AbsRerankerModel(ABC, nn.Module):
         Args:
             output_dir (str): Directory for saving the model.
         """
+        # self.model.save_pretrained(output_dir)
         state_dict = self.model.state_dict()
         state_dict = type(state_dict)(
             {k: v.clone().cpu()

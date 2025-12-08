@@ -13,12 +13,12 @@
 /root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/GainRAG/GainRAG/data/data2selector_test.py
 
 组合分数，归一化，生成最终评分  组合两个基础分数，一个可选惩罚项
-
+--train_data /root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/GainRAG/GainRAG/data/without_pse_nq_train_selector_softmax_combined.jsonl \
+最好的效果的数据集
 
 
 /root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/GainRAG/GainRAG/data/selector.py
 从大的训练集中抽取小训练集
-
 
 
 
