@@ -68,38 +68,50 @@ class AbsRerankerModel(ABC, nn.Module):
         pass
 
     def forward(self, pair: Union[Dict[str, Tensor], List[Dict[str, Tensor]]] = None, teacher_scores: Optional[Tensor] = None):
-        """The computation performed at every call.
-
-        Args:
-            pair (Union[Dict[str, Tensor], List[Dict[str, Tensor]]], optional): The query-document pair. Defaults to ``None``.
-            teacher_scores (Optional[Tensor], optional): Teacher scores of knowledge distillation. Defaults to None.
-
-        Returns:
-            RerankerOutput: Output of reranker model.
         """
-        ranker_logits = self.encode(pair) # (batch_size * num, dim)  # dim=1, num=len(pairs 一个item组成的)
+        GRPO-style training for Reranker using teacher scores as rewards.
+        """
+        # 1. 获取 Student 模型的原始打分 (Logits)
+        ranker_logits = self.encode(pair) # (batch_size * num_docs_per_query, )
         
-
         if self.training:
-            grouped_logits = ranker_logits.view(self.train_batch_size, -1)                              # (batch_size, pairs_num)
-            teacher_scores = torch.Tensor(teacher_scores)
-            teacher_targets = teacher_scores.view(self.train_batch_size, -1).to(grouped_logits.device)  # (batch_size, pairs_num)
+            # 2. 重塑形状为 (Batch_Size, Group_Size)
+            # Group_Size 就是每个 Query 对应的文档数量
+            grouped_logits = ranker_logits.view(self.train_batch_size, -1)
+            
+            # 3. 处理 Teacher Scores (作为 Reward)
+            # 确保 teacher_scores 是 Tensor 且在正确的设备上
+            if not isinstance(teacher_scores, torch.Tensor):
+                teacher_scores = torch.tensor(teacher_scores)
+            rewards = teacher_scores.view(self.train_batch_size, -1).to(grouped_logits.device)
 
-            # GRPO loss implementation
-            # Calculate mean and std of rewards (teacher_scores) within each group
-            mean_rewards = teacher_targets.mean(dim=-1, keepdim=True)
-            std_rewards = teacher_targets.std(dim=-1, keepdim=True)
+            # --- GRPO 核心逻辑 ---
+
+            # 4. 计算组内优势 (Advantage)
+            # 对每个 Query (Group) 内部计算 Reward 的均值和标准差
+            mean_rewards = rewards.mean(dim=-1, keepdim=True)
+            std_rewards = rewards.std(dim=-1, keepdim=True)
             
-            # Calculate advantages
-            # Add a small epsilon to avoid division by zero
-            advantages = (teacher_targets - mean_rewards) / (std_rewards + 1e-8)
+            # 标准化 Reward 得到 Advantage
+            # 加上 1e-8 防止除以零
+            advantages = (rewards - mean_rewards) / (std_rewards + 1e-8)
             
-            # Calculate log probabilities of the student model
+            # 5. 计算 Student 的策略分布 (Log Probabilities)
+            # 使用 Log Softmax 将 logits 转化为对数概率
             student_log_probs = torch.log_softmax(grouped_logits, dim=-1)
             
-            # GRPO loss: maximize expected advantage -> minimize -1 * (log_prob * advantage)
-            # We detach advantages as they are considered fixed targets for the current step
+            # 6. 计算 GRPO Loss
+            # 目标：最大化 E[log_prob * advantage]
+            # 损失：最小化 - (log_prob * advantage)
+            # detach() 很重要：我们不希望梯度传导回 advantage (即不更新 teacher 或 reward 计算方式)
+            
+            # 逐元素相乘，然后在 Group 维度求和，最后在 Batch 维度求平均
             loss = -torch.mean(torch.sum(student_log_probs * advantages.detach(), dim=-1))
+            
+            # 可选：添加 KL 散度正则项 (防止 Student 策略偏离 Teacher 太远，如果需要的话)
+            # ref_log_probs = torch.log_softmax(rewards, dim=-1) # 假设 teacher scores 也是 logits
+            # kl_loss = torch.nn.functional.kl_div(student_log_probs, ref_log_probs, reduction='batchmean', log_target=True)
+            # loss = loss + beta * kl_loss
 
         else:
             loss = None
@@ -108,7 +120,6 @@ class AbsRerankerModel(ABC, nn.Module):
             loss=loss,
             scores=ranker_logits,
         )
-
     def compute_loss(self, scores, target):
         """Compute the loss.
 
