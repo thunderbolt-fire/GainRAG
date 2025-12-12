@@ -67,66 +67,69 @@ class AbsRerankerModel(ABC, nn.Module):
         """
         pass
 
+    # def forward(self, pair: Union[Dict[str, Tensor], List[Dict[str, Tensor]]] = None, teacher_scores: Optional[Tensor] = None):
+    #     """The computation performed at every call.
+
+    #     Args:
+    #         pair (Union[Dict[str, Tensor], List[Dict[str, Tensor]]], optional): The query-document pair. Defaults to ``None``.
+    #         teacher_scores (Optional[Tensor], optional): Teacher scores of knowledge distillation. Defaults to None.
+
+    #     Returns:
+    #         RerankerOutput: Output of reranker model.
+    #     """
+    #     ranker_logits = self.encode(pair) # (batch_size * num, dim)  # dim=1, num=len(pairs 一个item组成的)
+        
+    #     if teacher_scores is not None:
+    #         teacher_scores = torch.Tensor(teacher_scores)
+    #         teacher_targets = teacher_scores.view(self.train_batch_size, -1)  # (batch_size, pairs_num)
+    #         teacher_targets = torch.softmax(teacher_targets.detach(), dim=-1)
+
+    #     if self.training:
+    #         grouped_logits = ranker_logits.view(self.train_batch_size, -1)    # (batch_size, pairs_num)
+
+    #         # target = torch.zeros(self.train_batch_size, device=grouped_logits.device, dtype=torch.long)
+    #         # loss = self.compute_loss(grouped_logits, target)
+    #         if teacher_scores is not None:
+    #             teacher_targets = teacher_targets.to(grouped_logits.device)
+    #             # print(teacher_targets, torch.mean(torch.sum(torch.log_softmax(grouped_logits, dim=-1) * teacher_targets, dim=-1)))
+    #             # loss += - torch.mean(torch.sum(torch.log_softmax(grouped_logits, dim=-1) * teacher_targets, dim=-1))
+    #             loss = - torch.mean(torch.sum(torch.log_softmax(grouped_logits, dim=-1) * teacher_targets, dim=-1))
+    #     else:
+    #         loss = None
+
+    #     # print(loss)
+    #     return RerankerOutput(
+    #         loss=loss,
+    #         scores=ranker_logits,
+    #     )
+
     def forward(self, pair: Union[Dict[str, Tensor], List[Dict[str, Tensor]]] = None, teacher_scores: Optional[Tensor] = None):
+        """The computation performed at every call.
+
+        Args:
+            pair (Union[Dict[str, Tensor], List[Dict[str, Tensor]]], optional): The query-document pair. Defaults to ``None``.
+            teacher_scores (Optional[Tensor], optional): Teacher scores of knowledge distillation. Defaults to None.
+
+        Returns:
+            RerankerOutput: Output of reranker model.
         """
-        GRPO-style training for Reranker using teacher scores as rewards.
-        """
-        # 1. 获取 Student 模型的原始打分 (Logits)
-        ranker_logits = self.encode(pair) 
+        ranker_logits = self.encode(pair) # (batch_size * num, dim)  # dim=1, num=len(pairs 一个item组成的)
         
-        loss = None
-        
+
         if self.training:
-            # 2. 重塑形状
-            grouped_logits = ranker_logits.view(self.train_batch_size, -1)
-            
-            # 3. 处理 Teacher Scores
-            if teacher_scores is not None:
-                if not isinstance(teacher_scores, torch.Tensor):
-                    teacher_scores = torch.tensor(teacher_scores)
-                rewards = teacher_scores.view(self.train_batch_size, -1).to(grouped_logits.device)
+            grouped_logits = ranker_logits.view(self.train_batch_size, -1)                              # (batch_size, pairs_num)
+            teacher_scores = torch.Tensor(teacher_scores)
+            teacher_targets = teacher_scores.view(self.train_batch_size, -1).to(grouped_logits.device)  # (batch_size, pairs_num)
 
-                # --- GRPO 核心逻辑 ---
+            teacher_targets = torch.softmax(teacher_targets.detach(), dim=-1)
+            student_inputs = torch.log_softmax(grouped_logits, dim=-1)
 
-                # 4. 计算组内优势 (Advantage)
-                mean_rewards = rewards.mean(dim=-1, keepdim=True)
-                std_rewards = rewards.std(dim=-1, keepdim=True)
-                
-                # [关键修改 1] 增加 epsilon 防止除零，并对结果进行截断 (Clamp)
-                # 针对你的数据，std 可能非常小，epsilon 设大一点 (1e-5)
-                advantages = (rewards - mean_rewards) / (std_rewards + 1e-5)
-                
-                # 截断 Advantage，防止因 Teacher 分数过于接近导致的梯度爆炸
-                advantages = torch.clamp(advantages, min=-3.0, max=3.0)
-                
-                # 5. 计算 Student 的策略分布
-                student_log_probs = torch.log_softmax(grouped_logits, dim=-1)
-                
-                # 6. 计算 GRPO Loss
-                grpo_loss = -torch.mean(torch.sum(student_log_probs * advantages.detach(), dim=-1))
-                
-                # [关键修改 2] 必须启用 KL 散度正则项
-                # 因为你的 Teacher 分数已经是 0-1 的概率值，我们希望 Student 的分布逼近这个分布
-                # 但直接对 0-1 分数做 log_softmax 物理意义不对（它们不是 logits）
-                # 更好的做法是：将 Teacher Scores 视为目标概率分布（归一化后）
-                
-                # 将 Teacher Scores 归一化为概率分布 (Sum=1)
-                target_probs = rewards / (rewards.sum(dim=-1, keepdim=True) + 1e-8)
-                # 避免 log(0)
-                target_log_probs = torch.log(target_probs + 1e-10)
-                
-                # 计算 KL 散度: KL(Target || Student) 或者 KL(Student || Target)
-                # 这里使用 PyTorch 标准 KLDivLoss: input=log_probs, target=probs (or log_probs if log_target=True)
-                # 我们希望 Student (input) 逼近 Target
-                
-                # beta 系数：控制 KL 的权重。建议 0.01 - 0.1
-                beta = 0.1 
-                
-                kl_loss = torch.nn.functional.kl_div(student_log_probs, target_log_probs, reduction='batchmean', log_target=True)
-                
-                loss = grpo_loss + beta * kl_loss
-            else:
-                loss = torch.tensor(0.0, device=ranker_logits.device, requires_grad=True)
+            # loss = - torch.mean(torch.sum(student_inputs * teacher_targets, dim=-1))
+            loss = F.kl_div(student_inputs, teacher_targets, reduction="batchmean")
+
+
+        else:
+            loss = None
 
         return RerankerOutput(
             loss=loss,
