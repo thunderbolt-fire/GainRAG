@@ -3,7 +3,7 @@
 # 定义变量
 RERANKER_MODEL_PATH="/root/.cache/huggingface/hub/models--BAAI--bge-reranker-base/snapshots/2cfc18c9415c912f9d8155881c133215df768a70"
 TRAIN_DATA_PATH="/root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/GainRAG/GainRAG/data/without_pse_nq_train_selector_sampled_13971.jsonl"
-OUTPUT_DIR="./model_outputs/test_grpo2/"
+OUTPUT_DIR="./model_outputs/test_grpo_new_sample/"
 TRAIN_GROUP_SIZE=16
 QUERY_MAX_LEN=256
 PASSAGE_MAX_LEN=256
@@ -43,4 +43,4 @@ torchrun --nproc_per_node 1 -m selector_finetune \
     --logging_steps ${LOGGING_STEPS} \
     --save_steps ${SAVE_STEPS} \
     2>&1 | tee "${LOG_FILE}" \
-    && python run_rag.py --rerank_model_path "${OUTPUT_DIR}"
+    && python /root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/RADIO/run_rag.py --rerank_model_path "${OUTPUT_DIR}"

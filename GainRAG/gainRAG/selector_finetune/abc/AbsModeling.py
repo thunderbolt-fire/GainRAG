@@ -67,74 +67,87 @@ class AbsRerankerModel(ABC, nn.Module):
         """
         pass
 
-    # def forward(self, pair: Union[Dict[str, Tensor], List[Dict[str, Tensor]]] = None, teacher_scores: Optional[Tensor] = None):
-    #     """The computation performed at every call.
+    def forward(self, pair=None, teacher_scores=None):
+        ranker_logits = self.encode(pair)  # (B*N, 1) 或 (B*N,)
+        if ranker_logits.dim() == 2 and ranker_logits.size(-1) == 1:
+            ranker_logits = ranker_logits.squeeze(-1)  # (B*N,)
 
-    #     Args:
-    #         pair (Union[Dict[str, Tensor], List[Dict[str, Tensor]]], optional): The query-document pair. Defaults to ``None``.
-    #         teacher_scores (Optional[Tensor], optional): Teacher scores of knowledge distillation. Defaults to None.
+        if not self.training:
+            return RerankerOutput(loss=None, scores=ranker_logits)
 
-    #     Returns:
-    #         RerankerOutput: Output of reranker model.
-    #     """
-    #     ranker_logits = self.encode(pair) # (batch_size * num, dim)  # dim=1, num=len(pairs 一个item组成的)
-        
-    #     if teacher_scores is not None:
-    #         teacher_scores = torch.Tensor(teacher_scores)
-    #         teacher_targets = teacher_scores.view(self.train_batch_size, -1)  # (batch_size, pairs_num)
-    #         teacher_targets = torch.softmax(teacher_targets.detach(), dim=-1)
+        # ---------- 0) 动态推断 B 和 N，避免 self.train_batch_size 不一致导致错位 ----------
+        teacher_scores = torch.as_tensor(teacher_scores, dtype=ranker_logits.dtype, device=ranker_logits.device)
+        total = ranker_logits.numel()
+        if teacher_scores.numel() != total:
+            raise ValueError(f"teacher_scores numel({teacher_scores.numel()}) != logits numel({total})")
 
-    #     if self.training:
-    #         grouped_logits = ranker_logits.view(self.train_batch_size, -1)    # (batch_size, pairs_num)
+        # 训练组大小 N：优先从 args 或模型属性拿（你数据集里是 args.train_group_size）
+        group_size = getattr(self, "train_group_size", None)
+        if group_size is None:
+            # 兜底：尝试从固定 train_group_size 推断；否则只能用 self.train_batch_size
+            # 建议你在构建模型时：self.train_group_size = data_args.train_group_size
+            group_size = total // getattr(self, "train_batch_size", 1)
 
-    #         # target = torch.zeros(self.train_batch_size, device=grouped_logits.device, dtype=torch.long)
-    #         # loss = self.compute_loss(grouped_logits, target)
-    #         if teacher_scores is not None:
-    #             teacher_targets = teacher_targets.to(grouped_logits.device)
-    #             # print(teacher_targets, torch.mean(torch.sum(torch.log_softmax(grouped_logits, dim=-1) * teacher_targets, dim=-1)))
-    #             # loss += - torch.mean(torch.sum(torch.log_softmax(grouped_logits, dim=-1) * teacher_targets, dim=-1))
-    #             loss = - torch.mean(torch.sum(torch.log_softmax(grouped_logits, dim=-1) * teacher_targets, dim=-1))
-    #     else:
-    #         loss = None
+        if total % group_size != 0:
+            raise ValueError(f"(B*N)={total} not divisible by group_size={group_size}")
 
-    #     # print(loss)
-    #     return RerankerOutput(
-    #         loss=loss,
-    #         scores=ranker_logits,
-    #     )
+        B = total // group_size
+        N = group_size
 
-    def forward(self, pair: Union[Dict[str, Tensor], List[Dict[str, Tensor]]] = None, teacher_scores: Optional[Tensor] = None):
-        """The computation performed at every call.
+        grouped_logits = ranker_logits.view(B, N)          # (B, N)
+        teacher_scores = teacher_scores.view(B, N)         # (B, N)
 
-        Args:
-            pair (Union[Dict[str, Tensor], List[Dict[str, Tensor]]], optional): The query-document pair. Defaults to ``None``.
-            teacher_scores (Optional[Tensor], optional): Teacher scores of knowledge distillation. Defaults to None.
+        # ---------- 1) teacher 分布：分数在[0,1]时必须加温度，否则接近均匀 ----------
+        t_temp = float(getattr(self, "teacher_temp", 0.2))  # 建议 0.1~0.5
+        t_logits = teacher_scores.detach() / max(t_temp, 1e-6)
+        teacher_probs = torch.softmax(t_logits, dim=-1)     # (B, N)
 
-        Returns:
-            RerankerOutput: Output of reranker model.
-        """
-        ranker_logits = self.encode(pair) # (batch_size * num, dim)  # dim=1, num=len(pairs 一个item组成的)
-        
+        # student 分布
+        logp = torch.log_softmax(grouped_logits, dim=-1)    # (B, N)
+        p = torch.softmax(grouped_logits, dim=-1)           # (B, N)
 
-        if self.training:
-            grouped_logits = ranker_logits.view(self.train_batch_size, -1)                              # (batch_size, pairs_num)
-            teacher_scores = torch.Tensor(teacher_scores)
-            teacher_targets = teacher_scores.view(self.train_batch_size, -1).to(grouped_logits.device)  # (batch_size, pairs_num)
+        # ---------- 2) KD：KL(teacher || student) >= 0 ----------
+        kd_loss = F.kl_div(logp, teacher_probs, reduction="batchmean")
 
-            teacher_targets = torch.softmax(teacher_targets.detach(), dim=-1)
-            student_inputs = torch.log_softmax(grouped_logits, dim=-1)
+        # ---------- 3) GRPO（采样式 policy gradient，方差更低且不容易“怪负”） ----------
+        # advantage 用 log teacher_probs 做 group-relative
+        adv = torch.log(teacher_probs + 1e-12)
+        adv = adv - adv.mean(dim=-1, keepdim=True)
+        adv = adv / (adv.std(dim=-1, keepdim=True) + 1e-8)
+        adv = adv.clamp(-5.0, 5.0).detach()
 
-            # loss = - torch.mean(torch.sum(student_inputs * teacher_targets, dim=-1))
-            loss = F.kl_div(student_inputs, teacher_targets, reduction="batchmean")
-
-
+        # 从 student policy 采样 action（可切到 argmax，更稳）
+        if getattr(self, "grpo_sample", True):
+            a = torch.multinomial(p.detach(), num_samples=1).squeeze(-1)  # (B,)
         else:
-            loss = None
+            a = torch.argmax(p.detach(), dim=-1)  # (B,)
 
-        return RerankerOutput(
-            loss=loss,
-            scores=ranker_logits,
-        )
+        chosen_logp = logp.gather(-1, a.unsqueeze(-1)).squeeze(-1)  # (B,)
+        chosen_adv = adv.gather(-1, a.unsqueeze(-1)).squeeze(-1)    # (B,)
+
+        grpo_loss = -(chosen_adv * chosen_logp).mean()
+
+        # 熵正则（可选，防止策略过早塌缩导致梯度尖峰）
+        entropy = -(p * logp).sum(dim=-1).mean()
+        ent_w = float(getattr(self, "entropy_weight", 0.0))  # 建议先 0.0~0.01
+        grpo_loss = grpo_loss - ent_w * entropy
+
+        # ---------- 4) KL 约束：KL(student || teacher) >= 0 ----------
+        kl_pi_teacher = (p * (torch.log(p + 1e-12) - torch.log(teacher_probs + 1e-12))).sum(dim=-1).mean()
+
+        # 权重（建议 grpo 小一点起步）
+        kd_w = float(getattr(self, "kd_weight", 1.0))
+        grpo_w = float(getattr(self, "grpo_weight", 0.1))
+        kl_w = float(getattr(self, "kl_weight", 0.1))
+
+        loss = kd_w * kd_loss + grpo_w * grpo_loss + kl_w * kl_pi_teacher
+
+        # ---------- 5) 数值保护：出现 NaN/Inf 就退化到纯 KD ----------
+        if not torch.isfinite(loss):
+            logger.warning("Non-finite loss detected, fallback to kd_loss only.")
+            loss = kd_loss
+
+        return RerankerOutput(loss=loss, scores=ranker_logits)
 
     def compute_loss(self, scores, target):
         """Compute the loss.
