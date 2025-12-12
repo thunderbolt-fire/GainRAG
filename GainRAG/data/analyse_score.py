@@ -1,4 +1,4 @@
-# python
+# %%
 import json
 from pathlib import Path
 from statistics import mean, pstdev
@@ -214,3 +214,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+# %%
