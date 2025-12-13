@@ -3,7 +3,7 @@
 # 定义变量
 RERANKER_MODEL_PATH="/root/.cache/huggingface/hub/models--BAAI--bge-reranker-base/snapshots/2cfc18c9415c912f9d8155881c133215df768a70"
 TRAIN_DATA_PATH="/root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/GainRAG/GainRAG/data/without_pse_nq_train_selector_sampled_13971.jsonl"
-OUTPUT_DIR="./model_outputs/test_grpo_new_sample/"
+OUTPUT_DIR="./model_outputs/test_grpo_new_sample_grpo_1.0_kd_kl/"
 TRAIN_GROUP_SIZE=16
 QUERY_MAX_LEN=256
 PASSAGE_MAX_LEN=256
@@ -11,7 +11,7 @@ MAX_LEN=512
 PAD_TO_MULTIPLE_OF=8
 LEARNING_RATE=6e-5
 NUM_TRAIN_EPOCHS=2
-PER_DEVICE_TRAIN_BATCH_SIZE=8
+PER_DEVICE_TRAIN_BATCH_SIZE=8  #真的batch_size
 GRADIENT_ACCUMULATION_STEPS=1
 WARMUP_RATIO=0.1
 WEIGHT_DECAY=0.01
