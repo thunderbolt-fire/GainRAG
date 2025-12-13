@@ -109,23 +109,13 @@ class AbsRerankerModel(ABC, nn.Module):
         # ---------- 2) KD：KL(teacher || student) >= 0 ----------
         kd_loss = F.kl_div(logp, teacher_probs, reduction="batchmean")
 
-        # ---------- 3) GRPO（采样式 policy gradient，方差更低且不容易“怪负”） ----------
-        # advantage 用 log teacher_probs 做 group-relative
-        adv = torch.log(teacher_probs + 1e-12)
-        adv = adv - adv.mean(dim=-1, keepdim=True)
-        adv = adv / (adv.std(dim=-1, keepdim=True) + 1e-8)
-        adv = adv.clamp(-5.0, 5.0).detach()
+        # ---------- 3) GRPO（全动作加权版本：按组内 advantage 加权 logp） ----------
+        tlogp = torch.log(teacher_probs + 1e-12)  # 保留 teacher_probs 原样
+        adv = tlogp - tlogp.mean(dim=-1, keepdim=True)          # (B, N)
+        adv = adv / (adv.std(dim=-1, keepdim=True) + 1e-8)      # (B, N)
+        adv = adv.clamp(-5.0, 5.0).detach()                     # (B, N)
 
-        # 从 student policy 采样 action（可切到 argmax，更稳）
-        if getattr(self, "grpo_sample", True):
-            a = torch.multinomial(p.detach(), num_samples=1).squeeze(-1)  # (B,)
-        else:
-            a = torch.argmax(p.detach(), dim=-1)  # (B,)
-
-        chosen_logp = logp.gather(-1, a.unsqueeze(-1)).squeeze(-1)  # (B,)
-        chosen_adv = adv.gather(-1, a.unsqueeze(-1)).squeeze(-1)    # (B,)
-
-        grpo_loss = -(chosen_adv * chosen_logp).mean()
+        grpo_loss = -(adv * logp).sum(dim=-1).mean()
 
         # 熵正则（可选，防止策略过早塌缩导致梯度尖峰）
         entropy = -(p * logp).sum(dim=-1).mean()
@@ -137,7 +127,7 @@ class AbsRerankerModel(ABC, nn.Module):
 
         # 权重（建议 grpo 小一点起步）
         kd_w = float(getattr(self, "kd_weight", 1.0))
-        grpo_w = float(getattr(self, "grpo_weight", 1.0))
+        grpo_w = float(getattr(self, "grpo_weight", 0.1))
         kl_w = float(getattr(self, "kl_weight", 0.1))
 
         loss = kd_w * kd_loss + grpo_w * grpo_loss + kl_w * kl_pi_teacher
