@@ -69,6 +69,7 @@ class AbsRerankerRunner(ABC):
 
         # Set seed
         set_seed(training_args.seed)
+        print("随机种子",training_args.seed)
 
         self.tokenizer, self.model = self.load_tokenizer_and_model()
         self.train_dataset = self.load_train_dataset()

@@ -355,7 +355,7 @@ if __name__ == '__main__':
     parser.add_argument("--passages_embeddings", type=str, default='/root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/GainRAG/wikipedia_embeddings/passages_*', help="Path to passages embeddings.")
     parser.add_argument("--passages", type=str, default='/root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/FlashRAG/FlashRAG_Dataset/retrieval_corpus/wiki18_100w.jsonl', help="Path to passages file.")
     parser.add_argument("--model_name_or_path", type=str, default='/root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/FlashRAG/models/e5-base-v2', help="Path to the model.")
-    parser.add_argument("--data_path_or_dir", type=str, default='/root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/GainRAG/dataset/nq/train.jsonl', help="Path or dir to the input data.")
+    parser.add_argument("--data_path_or_dir", type=str, default='/root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/FlashRAG/FlashRAG_Dataset/triviaqa/train.jsonl', help="Path or dir to the input data.")
     parser.add_argument("--output_dir", type=str, default='retrieved_results', help="Path to the output directory.")
     parser.add_argument("--n_docs", type=int, default=100, help="Number of documents to retrieve.")
     parser.add_argument("--use_gpu", type=lambda x: x.lower() == 'true', default=True, help="Enable GPU for computation (default: True).")

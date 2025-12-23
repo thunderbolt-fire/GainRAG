@@ -185,3 +185,7 @@ dataset/
 .grpo.log
 .data_train_nq.json
 .nq_data_dev.json
+
+
+
+GainRAG/gainRAG/output/*

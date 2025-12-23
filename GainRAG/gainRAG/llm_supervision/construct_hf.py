@@ -54,6 +54,10 @@ def signal_construction(data_path, output_file, lm_type, task, alpha=0.5):
 
     model, tokenizer = load_model(lm_type)
 
+    # 在开始处理前先将数据写入文件（初始化）
+    with open(output_file, "w") as f:
+        json.dump(prompts_data, f, indent=4)
+
     for i in tqdm(range(0, len(prompts_data))):
         retrieved_prompts = list()
         standard_prompt = prompts_data[i]['prompt_standard']
@@ -74,10 +78,9 @@ def signal_construction(data_path, output_file, lm_type, task, alpha=0.5):
         for prompt_item, min_PPL_CD in zip(prompts_data[i]['passages'], min_PPL_CD_list):
             prompt_item['PPL_CD'] = min_PPL_CD
 
-    with open(output_file, "w") as f:
-        json.dump(prompts_data, f, indent=4)
-    # return prompts_data
-    
+        # 每处理完一条数据就保存一次
+        with open(output_file, "w") as f:
+            json.dump(prompts_data, f, indent=4) 
 
 # def passage_evaluation(prompts_data, lm_type, output_file):
 #     model, tokenizer = load_model_vllm(lm_type)
@@ -106,8 +109,8 @@ if __name__ == '__main__':
     parser.add_argument("--lm_type", type=str, default='Llama-3.1-8B-Instruct', help="LLM to use.")
     parser.add_argument("--task", type=str, default='NaturalQA', help="Task prompt template to use.")
     parser.add_argument("--alpha", type=float, default=0.5, help="alpha of contrastive decoding.")
-    parser.add_argument("--data_path", type=str, default='/root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/GainRAG/GainRAG/gainRAG/retrieval_engine/retrieved_results/train.jsonl', help="Path to the input file.")
-    parser.add_argument("--output_path", type=str, default='./data_train_nq.json', help="Path to the output file.")
+    parser.add_argument("--data_path", type=str, default='/root/siton-data-0553377b2d664236bad5b5d0ba8aa419/workspace/GainRAG/GainRAG/gainRAG/retrieval_engine/retrieved_results/train_triviaqa_random_sample_5k.jsonl', help="Path to the input file.")
+    parser.add_argument("--output_path", type=str, default='./data_train_triviaqa_5k.json', help="Path to the output file.")
     args = parser.parse_args()
     
     prompts_data = signal_construction(args.data_path, args.output_path, args.lm_type, args.task, args.alpha)
