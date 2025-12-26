@@ -116,7 +116,7 @@ class AbsRerankerModel(ABC, nn.Module):
         adv = adv / (adv.std(dim=-1, keepdim=True) + 1e-8)
         adv = adv.clamp(-5.0, 5.0).detach()
 
-        # 从 student policy 采样 action（可切到 argmax，更稳）
+        # 从 student policy 采样 ， 只采取了一个采样
 
         a = torch.argmax(p.detach(), dim=-1)  # (B,)
 
@@ -130,13 +130,13 @@ class AbsRerankerModel(ABC, nn.Module):
         ent_w = float(getattr(self, "entropy_weight", 0.0))  # 建议先 0.0~0.01
         grpo_loss = grpo_loss - ent_w * entropy
 
-        # ---------- 4) KL 约束：KL(student || teacher) >= 0 ----------
+        # ---------- 4) KL 约束：KL(student || teacher) >= 0 ---------- 而不是和原来的old模型
         kl_pi_teacher = (p * (torch.log(p + 1e-12) - torch.log(teacher_probs + 1e-12))).sum(dim=-1).mean()
 
         # 权重（建议 grpo 小一点起步）
         kd_w = float(getattr(self, "kd_weight", 1.0))
         grpo_w = float(getattr(self, "grpo_weight", 0.1))
-        kl_w = float(getattr(self, "kl_weight", 0.1))
+        kl_w = float(getattr(self, "kl_weight", 0.1)) 
 
         loss = grpo_w * grpo_loss + kl_w * kl_pi_teacher
 
